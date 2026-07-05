@@ -1,0 +1,13 @@
+browser_data/
+.env
+原题目/
+out/
+tmp/
+GRP-*/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.DS_Store
+Thumbs.db
