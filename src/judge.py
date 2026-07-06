@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""模型B(智谱 glm-4.5v 视觉)判卷。【全图判卷】：题干PNG + 标准答案PNG + AI解答PNG(截图)。
-输出：{correct, error_point, raw}。主模型异常时回退 config.B_FALLBACK。
+"""模型B(视觉)判卷。【逐步判卷】：拆 AI 解答为一步步，对照标准答案，定位第一个出错的步骤。
+输出：{correct, wrong_step, error_point, raw}。空回复/失败自动回退 config.B_FALLBACK。
 """
 import json
 import re
@@ -25,9 +25,12 @@ def _build_content(stem_pngs, answer_pngs, reply_pngs):
         "text": (
             "你是物理竞赛判卷专家。下面依次给出三组图片：① 本题题干；② 标准答案；"
             "③ 某AI模型(豆包)给出的解答(截图)。\n"
-            "请判断该AI解答是否正确——**逐个式子**对照标准答案与AI解答，仔细核查："
-            "物理模型、所列方程、**正负号 / 系数 / 上下标 / 积分限 / 边界条件**、推导与最终结果。"
-            "物理竞赛大题，错一个负号也算错；不确定时倾向判错。\n"
+            "请【逐步判卷】：把 AI 解答拆成一个个步骤"
+            "(受力/受力矩分析 → 列方程 → 代入 → 化简 → 积分 → 求解…)，"
+            "对照标准答案的对应步骤，**从前往后找出第一个出错的步骤**。\n"
+            "核查要点：物理模型是否选错、所列方程是否成立、"
+            "**正负号 / 系数 / 上下标 / 积分限 / 边界条件**、代数化简、最终结果。"
+            "物理竞赛大题，错一个负号也算错；后续步骤若依赖前面的错误，定位第一个错步即可，不必全列。\n"
         ),
     }]
     for p in stem_pngs:
@@ -40,10 +43,13 @@ def _build_content(stem_pngs, answer_pngs, reply_pngs):
         parts += [{"type": "text", "text": "〔AI解答图〕"},
                   {"type": "image_url", "image_url": {"url": _img_data_url(p)}}]
     parts.append({"type": "text", "text":
-        "现在给出判断。严格只返回一个 JSON，不要额外文字：\n"
-        '{"correct": true或false, "error_point": "若错误，必须写清三点：'
-        '①错在第几问/哪个式子(标明式子编号) ②AI写成了什么(或忽略了什么关键项) '
-        '③对照标准答案，正确的应该是什么；若正确填\\"解答正确\\""}'})
+        "现在给出判断。严格只返回一个 JSON，不要任何额外文字：\n"
+        '{"correct": true或false, "wrong_step": "...", "error_point": "..."}\n'
+        "字段说明：correct = AI解答是否正确；"
+        "wrong_step = 若错误，定位【第一个出错】的步骤(例如 第(1)问列方程那步 / 第(2)问化简指数那步)，若正确填空串；"
+        "error_point = 若错误，详细写：①这一步AI具体做了什么(把它写的式子/假设抄出来) "
+        "②为什么错(正负号?系数?漏项?物理模型错?积分限?) ③对照标准答案，这一步正确的应该是什么。若正确填\"解答正确\"。"
+    })
     return parts
 
 
@@ -53,14 +59,15 @@ def _parse(msg):
     try:
         d = json.loads(raw)
         return {"correct": bool(d.get("correct", False)),
+                "wrong_step": str(d.get("wrong_step", "")).strip(),
                 "error_point": str(d.get("error_point", "")).strip() or "（未给出错点）",
                 "raw": msg}
     except Exception:
-        return {"correct": False, "error_point": msg.strip()[:300], "raw": msg}
+        return {"correct": False, "wrong_step": "", "error_point": msg.strip()[:300], "raw": msg}
 
 
 def judge(stem_pngs, answer_pngs, reply_pngs, model=None, _depth=0):
-    """全图判卷。reply_pngs: A 解答截图路径列表。"""
+    """逐步判卷。reply_pngs: A 解答截图路径列表。"""
     model = model or config.B_MODEL_NAME
     reply_pngs = [p for p in reply_pngs if p and pathlib.Path(p).exists()]
     payload = {

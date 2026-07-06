@@ -72,9 +72,11 @@ def run(input_docx, theme, start=None, end=None):
                 print(f"   → A 正确，不打包")
             else:
                 seq = len(wrong) + 1
-                print(f"   → A 错误：{res['error_point']}")
+                ws = res.get("wrong_step", "")
+                print(f"   → A 错误" + (f" 【{ws}】" if ws else "") + f": {res['error_point']}")
+                ep = (f"【错步】{ws}\n{res['error_point']}" if ws else res["error_point"])
                 grp = pk.archive_wrong_problem(
-                    it["problem"], a["share_link"], res["error_point"],
+                    it["problem"], a["share_link"], ep,
                     it["stem_docx"], it["answer_docx"],
                     config.OUTPUT_DIR, theme, seq)
                 wrong.append(grp)
