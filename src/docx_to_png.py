@@ -91,14 +91,32 @@ def pdf_to_pngs(pdf_path, out_dir, dpi=200, prefix="page"):
         pdf.close()
 
 
+def _is_blank_png(png_path, white_ratio=0.995):
+    """检测 PNG 是否几乎全白(空白页)。"""
+    try:
+        from PIL import Image
+        im = Image.open(png_path).convert("L")
+        w, h = im.size
+        step = max(1, (w * h) // 20000)   # 采样加速
+        px = list(im.getdata())[::step]
+        white = sum(1 for p in px if p > 240)
+        return white / len(px) > white_ratio
+    except Exception:
+        return False
+
+
 def docx_to_pngs(docx_path, out_dir, dpi=200, prefix="page"):
-    """docx → PNG 路径列表(每页一张)。中间 PDF 留在同目录便于排查。"""
+    """docx → PNG 路径列表(每页一张, 自动过滤 Word 多出的空白页)。"""
     docx_path = pathlib.Path(docx_path)
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = out_dir / (docx_path.stem + ".pdf")
     docx_to_pdf(docx_path, pdf_path)
-    return pdf_to_pngs(pdf_path, out_dir, dpi=dpi, prefix=prefix)
+    paths = pdf_to_pngs(pdf_path, out_dir, dpi=dpi, prefix=prefix)
+    kept = [p for p in paths if not _is_blank_png(p)]
+    if len(kept) < len(paths):
+        print(f"  [清理] 过滤了 {len(paths) - len(kept)} 张空白页")
+    return kept
 
 
 def quit_word():

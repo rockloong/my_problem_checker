@@ -1,5 +1,8 @@
 # 豆包测评 - 依赖
 python-docx>=1.2.0      # 读写 .docx
-playwright>=1.59.0      # 浏览器自动化(火山方舟网页, 模型A)
+playwright>=1.59.0      # 浏览器自动化(豆包网页, 模型A)
 lxml>=6.0               # 解析 OMML 公式 XML
-requests>=2.31          # 调智谱 GLM API(模型B)
+requests>=2.31          # 调判卷模型 API(模型B)
+python-dotenv>=1.0      # 读 .env 配置(用户填key不动代码)
+pyperclip>=1.8          # 读分享链接剪贴板
+pywin32>=306            # Word COM (Windows docx→PDF)

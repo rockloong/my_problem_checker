@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""模型B(视觉)判卷。【逐步判卷】：拆 AI 解答为一步步，对照标准答案，定位第一个出错的步骤。
-输出：{correct, wrong_step, error_point, raw}。空回复/失败自动回退 config.B_FALLBACK。
+"""模型B(视觉)判卷。【按小问逐个核对】：正确的小问跳过，错误的逐个详细分析。
+输出：{correct, wrong_steps, error_point, raw}。空回复/失败回退 config.B_FALLBACK。
 """
 import json
 import re
@@ -25,12 +25,17 @@ def _build_content(stem_pngs, answer_pngs, reply_pngs):
         "text": (
             "你是物理竞赛判卷专家。下面依次给出三组图片：① 本题题干；② 标准答案；"
             "③ 某AI模型(豆包)给出的解答(截图)。\n"
-            "请【逐步判卷】：把 AI 解答拆成一个个步骤"
-            "(受力/受力矩分析 → 列方程 → 代入 → 化简 → 积分 → 求解…)，"
-            "对照标准答案的对应步骤，**从前往后找出第一个出错的步骤**。\n"
-            "核查要点：物理模型是否选错、所列方程是否成立、"
-            "**正负号 / 系数 / 上下标 / 积分限 / 边界条件**、代数化简、最终结果。"
-            "物理竞赛大题，错一个负号也算错；后续步骤若依赖前面的错误，定位第一个错步即可，不必全列。\n"
+            "请【按小问逐个核对】(题目通常分为 (1)(2)(3)… 小问):\n"
+            "1. 对每一小问, 对照标准答案判断 AI 该问解答是否正确"
+            "(最终结果 + 关键中间式子都对 = 正确)。\n"
+            "2. 正确的小问直接跳过, 不用说。\n"
+            "3. 错误的小问, 按标准答案【详细核对】:\n"
+            "   - 标准答案里的关键式子, AI 生成结果中有没有(漏没漏关键式子)?\n"
+            "   - AI 的推导过程是否正确?\n"
+            "   - 是否存在化简错误 / 计算错误 / 正负号 / 系数错误?\n"
+            "   - 定位 AI 在这一问里具体哪一步开始出错。\n"
+            "⚠️ 把【所有】错误的小问都列出来, 不只第一个, 后面的也要判。\n"
+            "⚠️ wrong_steps 数组里只能放【判为错误】的小问; 判为正确的小问, 绝对不要放进数组。\n"
         ),
     }]
     for p in stem_pngs:
@@ -43,37 +48,77 @@ def _build_content(stem_pngs, answer_pngs, reply_pngs):
         parts += [{"type": "text", "text": "〔AI解答图〕"},
                   {"type": "image_url", "image_url": {"url": _img_data_url(p)}}]
     parts.append({"type": "text", "text":
-        "现在给出判断。严格只返回一个 JSON，不要任何额外文字：\n"
-        '{"correct": true或false, "wrong_step": "...", "error_point": "..."}\n'
-        "字段说明：correct = AI解答是否正确；"
-        "wrong_step = 若错误，定位【第一个出错】的步骤(例如 第(1)问列方程那步 / 第(2)问化简指数那步)，若正确填空串；"
-        "error_point = 若错误，详细写：①这一步AI具体做了什么(把它写的式子/假设抄出来) "
-        "②为什么错(正负号?系数?漏项?物理模型错?积分限?) ③对照标准答案，这一步正确的应该是什么。若正确填\"解答正确\"。"
+        "现在给出判断。严格只返回 JSON, 不要 markdown 代码块、不要额外文字:\n"
+        '{"wrong_steps": [{"question": "(1)", "reason": "AI在这一问具体错在哪(一句话)"}]}\n'
+        "规则: ① wrong_steps 只放判为【错误】的小问; 正确的小问完全不放进数组。"
+        "② reason 必须说错在哪(错步+为什么), 不能写\"一致/正确/无错\"。"
+        "③ 输出尽量短, 不要复述公式。④ 若 AI 全对, 返回 []。"
     })
     return parts
 
 
 def _parse(msg):
-    m = re.search(r"\{.*\}", msg, re.S)
-    raw = m.group(0) if m else msg
+    msg2 = msg.strip()
+    if msg2.startswith("```"):                # 去 markdown 代码块
+        msg2 = msg2.strip("`")
+        if msg2.startswith("json"):
+            msg2 = msg2[4:]
+    m = re.search(r"\{.*\}", msg2, re.S)
+    raw = m.group(0) if m else msg2
+    if raw.count("[") > raw.count("]"):        # 被截断 → 补齐括号
+        raw = raw.rstrip(", \n") + "]}"
     try:
         d = json.loads(raw)
-        return {"correct": bool(d.get("correct", False)),
-                "wrong_step": str(d.get("wrong_step", "")).strip(),
-                "error_point": str(d.get("error_point", "")).strip() or "（未给出错点）",
-                "raw": msg}
+        steps = d.get("wrong_steps", []) or []
+        bad = ["完全一致", "一致", "无错", "无误", "相符", "相同", "对的", "没算错", "正确无误"]
+        steps = [s for s in steps
+                 if not any(k in (str(s.get("reason", "")) + str(s.get("why_wrong", ""))) for k in bad)]
+        if not steps:
+            return {"correct": True, "wrong_steps": [], "error_point": "解答正确", "raw": msg}
+        parts = [f"{s.get('question', '?')}: {s.get('reason') or s.get('why_wrong', '')}"
+                 for s in steps]
+        return {"correct": False, "wrong_steps": steps,
+                "error_point": "\n".join(parts), "raw": msg}
     except Exception:
-        return {"correct": False, "wrong_step": "", "error_point": msg.strip()[:300], "raw": msg}
+        return {"correct": False, "wrong_steps": [], "error_point": msg.strip()[:600], "raw": msg}
+
+
+def _merge_if_many(paths, tag):
+    """多张图竖向拼成 1 张(规避视觉模型图片数量上限)。"""
+    paths = [p for p in paths if p and pathlib.Path(p).exists()]
+    if len(paths) <= 1:
+        return paths
+    try:
+        from PIL import Image
+        out = pathlib.Path(pathlib.Path(paths[0]).parent / f"_merged_{tag}.png")
+        imgs = [Image.open(p).convert("RGB") for p in paths]
+        w = max(im.width for im in imgs)
+        h = sum(im.height for im in imgs)
+        canvas = Image.new("RGB", (w, h), "white")
+        y = 0
+        for im in imgs:
+            canvas.paste(im, (0, y))
+            y += im.height
+        canvas.save(out)
+        return [str(out)]
+    except ImportError:
+        return paths
 
 
 def judge(stem_pngs, answer_pngs, reply_pngs, model=None, _depth=0):
-    """逐步判卷。reply_pngs: A 解答截图路径列表。"""
+    """按小问逐个核对判卷。reply_pngs: A 解答截图路径列表。"""
     model = model or config.B_MODEL_NAME
+    stem_pngs = [p for p in stem_pngs if p and pathlib.Path(p).exists()]
+    answer_pngs = [p for p in answer_pngs if p and pathlib.Path(p).exists()]
     reply_pngs = [p for p in reply_pngs if p and pathlib.Path(p).exists()]
+    # 图片总数 > 4 → 题干、答案各自竖拼成 1 张(智谱视觉模型限图数量)
+    if len(stem_pngs) + len(answer_pngs) + len(reply_pngs) > 4:
+        stem_pngs = _merge_if_many(stem_pngs, "stem")
+        answer_pngs = _merge_if_many(answer_pngs, "answer")
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": _build_content(stem_pngs, answer_pngs, reply_pngs)}],
-        "max_tokens": 2000,
+        "max_tokens": 2048,
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {config.B_API_KEY}", "Content-Type": "application/json"}

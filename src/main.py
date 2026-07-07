@@ -72,11 +72,12 @@ def run(input_docx, theme, start=None, end=None):
                 print(f"   → A 正确，不打包")
             else:
                 seq = len(wrong) + 1
-                ws = res.get("wrong_step", "")
-                print(f"   → A 错误" + (f" 【{ws}】" if ws else "") + f": {res['error_point']}")
-                ep = (f"【错步】{ws}\n{res['error_point']}" if ws else res["error_point"])
+                n = len(res.get("wrong_steps", []))
+                print(f"   → A 错误({n}个小问错):")
+                for line in res["error_point"].split("\n"):
+                    print(f"      {line}")
                 grp = pk.archive_wrong_problem(
-                    it["problem"], a["share_link"], ep,
+                    it["problem"], a["share_link"], res["error_point"],
                     it["stem_docx"], it["answer_docx"],
                     config.OUTPUT_DIR, theme, seq)
                 wrong.append(grp)
@@ -109,7 +110,54 @@ def _pick_docx():
         return ""
 
 
+def _config_dialog():
+    """首次运行没配判卷模型时, 弹 GUI 让用户填(智谱key 或 自定义模型), 写 .env 并运行时生效。"""
+    import tkinter as tk
+    from tkinter import messagebox
+    root = tk.Tk()
+    root.title("判卷模型配置 (填一种即可)")
+    root.geometry("520x440")
+    tk.Label(root, text="① 智谱 API Key(默认用智谱GLM判卷, open.bigmodel.cn 注册获取):", anchor="w").pack(fill="x", padx=12, pady=(12, 0))
+    zv = tk.StringVar(); tk.Entry(root, textvariable=zv, width=66, show="*").pack(padx=12)
+    tk.Label(root, text="② 或换自定义模型(可选, 兼容OpenAI, 如 GPT-4o):", anchor="w").pack(fill="x", padx=12, pady=(16, 0))
+    tk.Label(root, text="API URL:", anchor="w").pack(fill="x", padx=12)
+    uv = tk.StringVar(); tk.Entry(root, textvariable=uv, width=66).pack(padx=12)
+    tk.Label(root, text="API Key:", anchor="w").pack(fill="x", padx=12)
+    kv = tk.StringVar(); tk.Entry(root, textvariable=kv, width=66, show="*").pack(padx=12)
+    tk.Label(root, text="模型名(如 gpt-4o):", anchor="w").pack(fill="x", padx=12)
+    mv = tk.StringVar(); tk.Entry(root, textvariable=mv, width=66).pack(padx=12)
+
+    def save():
+        zhipu = zv.get().strip()
+        url, key, model = uv.get().strip(), kv.get().strip(), mv.get().strip()
+        if not zhipu and not (url and key and model):
+            messagebox.showwarning("没填全", "至少填智谱 key, 或自定义的 URL+Key+模型名。")
+            return
+        lines = []
+        if zhipu:
+            lines.append(f"ZHIPU_API_KEY={zhipu}")
+        if url and key and model:
+            lines += [f"B_API_URL={url}", f"B_API_KEY={key}", f"B_MODEL={model}"]
+        env_path = pathlib.Path(__file__).resolve().parent.parent / ".env"
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 运行时立即生效(不用重启)
+        if url and key and model:
+            config.B_API_URL, config.B_API_KEY, config.B_MODEL_NAME = url, key, model
+        elif zhipu:
+            config.ZHIPU_API_KEY = zhipu
+            config.B_API_KEY = zhipu
+        messagebox.showinfo("已保存", "配置已保存, 继续运行。")
+        root.destroy()
+
+    tk.Button(root, text="保存并继续", command=save, width=18).pack(pady=16)
+    root.mainloop()
+
+
 if __name__ == "__main__":
+    # 0. 没配判卷模型 → 弹 GUI 让用户填(不用改代码/文件)
+    if not config.B_API_KEY:
+        print("未检测到判卷模型配置，弹出对话框填写...")
+        _config_dialog()
     a = sys.argv
     if len(a) >= 4:
         # 命令行模式: main.py <docx> <主题> <起始题号> [结束题号]
@@ -125,12 +173,12 @@ if __name__ == "__main__":
         default_theme = pathlib.Path(docx).stem.replace("量子-", "") or "题目"
         theme = a[2] if len(a) > 2 else (
             input(f"主题(回车={default_theme}): ").strip() or default_theme)
-        rng = input("题号范围(如 7-10，回车=全部): ").strip()
+        rng = input("题号范围(如 7-10 或 3，回车=全部): ").strip()
         start = end = None
         if rng:
             if "-" in rng:
                 s, e = rng.split("-", 1)
                 start, end = int(s), int(e)
             else:
-                start = int(rng)
+                start = end = int(rng)   # 单个题号 = 只跑这一道
         run(docx, theme, start, end)
